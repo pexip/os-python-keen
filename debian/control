@@ -1,0 +1,13 @@
+Source: python-keen
+Section: python
+Priority: optional
+Maintainer: Pexip AS <packaging@pexip.com>
+Build-Depends: debhelper (>= 8.0.0), dh-python,
+ python-all (>= 2.7), python-setuptools
+Standards-Version: 3.9.2
+Homepage: https://github.com/keenlabs/KeenClient-Python
+
+Package: python-keen
+Architecture: all
+Depends: ${python:Depends} ${misc:Depends}
+Description: Python client for Keen IO
