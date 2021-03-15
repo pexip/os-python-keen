@@ -1,3 +1,20 @@
+python-keen (0.7.0-0pexip1) pexip; urgency=medium
+
+  * Update to new version 0.7.0 from upstream
+  * Add python3 package too
+  * Remove obsolete patches:
+    + 01-use-setuptools.patch
+    + 02-bundled-padding.patch
+  * Added new patches:
+    + 01-update-requirements.patch
+  * Added extra build-deps: python*-six, python*-requests,
+    python*-unittest2, python*-responses, python*-nose
+  * Updated Standards-Version and debhelper compat levels
+  * Various small packaging tweaks to make things work with current
+    tools.
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Mon, 15 Mar 2021 16:53:05 +0000
+
 python-keen (0.3.3-2) pexip; urgency=medium
 
   * Rebuild in buster environment
