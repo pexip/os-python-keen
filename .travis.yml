@@ -1,0 +1,23 @@
+language: python
+python:
+  - "2.7"
+  - "3.5"
+  - "3.6"
+  - "3.7"
+  - "3.8"
+# command to install dependencies
+install: |
+  pip install -r requirements.txt
+
+# command to run tests
+script: "python setup.py test"
+
+# deploy master to PyPI
+deploy:
+  provider: pypi
+  user: wiktor.olko
+  # encrypted with the Keen Travis project PublicKey. Only Travis has the PrivateKey and is able to decode it.
+  # travis encrypt PASSWORD_HERE --add deploy.password
+  password:
+    secure: nxwi3BYKikV+nz3+OLWv7BXakLM2I+EafvCRiBoYUNQ2BBzg2pyBqwKna/AeqID8ASaHYWfHha64+7rDvJD1Sh7/Xgcc0GzDhtqUAiKXyKsdlg+4Q0XHWT3jeRTA2+vkqYMuren3MlbcSgzyyNO/IKf3zItiX+cA8/dyxRqOe3g=
+  skip_existing: true
