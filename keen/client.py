@@ -2,7 +2,7 @@ import base64
 import copy
 import json
 import sys
-from keen import persistence_strategies, exceptions
+from keen import persistence_strategies, exceptions, saved_queries, cached_datasets
 from keen.api import KeenApi
 from keen.persistence_strategies import BasePersistenceStrategy
 
@@ -37,7 +37,10 @@ class Event(object):
         """
         event_as_dict = copy.deepcopy(self.event_body)
         if self.timestamp:
-            event_as_dict["keen"] = {"timestamp": self.timestamp.isoformat()}
+            if "keen" in event_as_dict:
+                event_as_dict["keen"]["timestamp"] = self.timestamp.isoformat()
+            else:
+                event_as_dict["keen"] = {"timestamp": self.timestamp.isoformat()}
         return json.dumps(event_as_dict)
 
 
@@ -51,11 +54,14 @@ class KeenClient(object):
     idea, though, so we support other strategies (such as persisting
     to a local Redis queue for later processing).
 
+    GET requests will timeout after 305 seconds by default.
+
     POST requests will timeout after 305 seconds by default.
     """
 
     def __init__(self, project_id, write_key=None, read_key=None,
-                 persistence_strategy=None, api_class=KeenApi, post_timeout=305):
+                 persistence_strategy=None, api_class=KeenApi, get_timeout=305, post_timeout=305,
+                 master_key=None, base_url=None):
         """ Initializes a KeenClient object.
 
         :param project_id: the Keen IO project ID
@@ -63,7 +69,9 @@ class KeenClient(object):
         :param read_key: a Keen IO Scoped Key for Reads
         :param persistence_strategy: optional, the strategy to use to persist
         the event
+        :param get_timeout: optional, the timeout on GET requests
         :param post_timeout: optional, the timeout on POST requests
+        :param master_key: a Keen IO Master API Key
         """
         super(KeenClient, self).__init__()
 
@@ -72,7 +80,9 @@ class KeenClient(object):
 
         # Set up an api client to be used for querying and optionally passed
         # into a default persistence strategy.
-        self.api = api_class(project_id, write_key=write_key, read_key=read_key, post_timeout=post_timeout)
+        self.api = api_class(project_id, write_key=write_key, read_key=read_key,
+                             get_timeout=get_timeout, post_timeout=post_timeout,
+                             master_key=master_key, base_url=base_url)
 
         if persistence_strategy:
             # validate the given persistence strategy
@@ -85,7 +95,10 @@ class KeenClient(object):
 
         self.project_id = project_id
         self.persistence_strategy = persistence_strategy
+        self.get_timeout = get_timeout
         self.post_timeout = post_timeout
+        self.saved_queries = saved_queries.SavedQueriesInterface(self.api)
+        self.cached_datasets = cached_datasets.CachedDatasetsInterface(self.api)
 
     if sys.version_info[0] < 3:
         @staticmethod
@@ -103,7 +116,6 @@ class KeenClient(object):
 
             if not project_id or not isinstance(project_id, str):
                 raise exceptions.InvalidProjectIdError(project_id)
-
 
     def add_event(self, event_collection, event_body, timestamp=None):
         """ Adds an event.
@@ -130,7 +142,7 @@ class KeenClient(object):
 
         :param events: dictionary of events
         """
-        self.persistence_strategy.batch_persist(events)
+        return self.persistence_strategy.batch_persist(events)
 
     def generate_image_beacon(self, event_collection, event_body, timestamp=None):
         """ Generates an image beacon URL.
@@ -147,6 +159,158 @@ class KeenClient(object):
             self.api.base_url, self.api.api_version, self.project_id, self._url_escape(event_collection),
             self.api.write_key.decode(sys.getdefaultencoding()), self._base64_encode(event_json)
         )
+
+    def delete_events(self, event_collection, timeframe=None, timezone=None, filters=None):
+        """ Deletes events.
+
+        :param event_collection: string, the event collection from which event are being deleted
+        :param timeframe: string or dict, the timeframe in which the events happened
+        example: "previous_7_days"
+        :param timezone: int, the timezone you'd like to use for the timeframe
+        and interval in seconds
+        :param filters: array of dict, contains the filters you'd like to apply to the data
+        example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
+
+        """
+        params = self.get_params(timeframe=timeframe, timezone=timezone, filters=filters)
+        return self.api.delete_events(event_collection, params)
+
+    def get_collection(self, event_collection):
+        """ Returns event collection schema
+
+        :param event_collection: string, the event collection from which schema is to be returned,
+        if left blank will return schema for all collections
+        """
+
+        return self.api.get_collection(event_collection)
+
+    def get_all_collections(self):
+        """ Returns event collection schema for all events
+
+        """
+
+        return self.api.get_all_collections()
+
+    def create_access_key(self, name, is_active=True, permitted=[], options={}):
+        """
+        Creates a new access key. A master key must be set first.
+
+        :param name: the name of the access key to create
+        :param is_active: Boolean value dictating whether this key is currently active (default True)
+        :param permitted: list of strings describing which operation types this key will permit
+                          Legal values include "writes", "queries", "saved_queries", "cached_queries",
+                          "datasets", and "schema".
+        :param options: dictionary containing more details about the key's permitted and restricted
+                        functionality
+        """
+
+        return self.api.create_access_key(name=name, is_active=is_active,
+                                          permitted=permitted, options=options)
+
+    def list_access_keys(self):
+        """
+        Returns a list of all access keys in this project. A master key must be set first.
+        """
+        return self.api.list_access_keys()
+
+    def get_access_key(self, key):
+        """
+        Returns details on a particular access key. A master key must be set first.
+
+        :param key: the 'key' value of the access key to retreive data from
+        """
+        return self.api.get_access_key(key)
+
+    def update_access_key_name(self, key, name):
+        """
+        Updates only the name portion of an access key.
+
+        :param key: the 'key' value of the access key to change the name of
+        :param name: the new name to give this access key
+        """
+        return self.api.update_access_key_name(key, name)
+
+    def add_access_key_permissions(self, key, permissions):
+        """
+        Adds to the existing list of permissions on this key with the contents of this list.
+        Will not remove any existing permissions or modify the remainder of the key.
+
+        :param key: the 'key' value of the access key to add permissions to
+        :param permissions: the new permissions to add to the existing list of permissions
+        """
+        return self.api.add_access_key_permissions(key, permissions)
+
+    def remove_access_key_permissions(self, key, permissions):
+        """
+        Removes a list of permissions from the existing list of permissions.
+        Will not remove all existing permissions unless all such permissions are included
+        in this list. Not to be confused with key revocation.
+
+        See also: revoke_access_key()
+
+        :param key: the 'key' value of the access key to remove some permissions from
+        :param permissions: the permissions you wish to remove from this access key
+        """
+        return self.api.remove_access_key_permissions(key, permissions)
+
+    def update_access_key_permissions(self, key, permissions):
+        """
+        Replaces all of the permissions on the access key but does not change
+        non-permission properties such as the key's name.
+
+        See also: add_access_key_permissions() and remove_access_key_permissions().
+
+        :param key: the 'key' value of the access key to change the permissions of
+        :param permissions: the new list of permissions for this key
+        """
+        return self.api.update_access_key_permissions(key, permissions)
+
+    def update_access_key_options(self, key, options):
+        """
+        Replaces all of the options on the access key but does not change
+        non-option properties such as permissions or the key's name.
+
+        :param key: the 'key' value of the access key to change the options of
+        :param options: the new dictionary of options for this key
+        """
+        return self.api.update_access_key_options(key, options)
+
+    def update_access_key_full(self, key, name, is_active, permitted, options):
+        """
+        Replaces the 'name', 'is_active', 'permitted', and 'options' values of a given key.
+        A master key must be set first.
+
+        :param key: the 'key' value of the access key for which the values will be replaced
+        :param name: the new name desired for this access key
+        :param is_active: whether the key should become enabled (True) or revoked (False)
+        :param permitted: the new list of permissions desired for this access key
+        :param options: the new dictionary of options for this access key
+        """
+        return self.api.update_access_key_full(key, name, is_active, permitted, options)
+
+    def revoke_access_key(self, key):
+        """
+        Revokes an access key. "Bad dog! No biscuit!"
+
+        :param key: the 'key' value of the access key to revoke
+        """
+        return self.api.revoke_access_key(key)
+
+    def unrevoke_access_key(self, key):
+        """
+        Re-enables an access key.
+
+        :param key: the 'key' value of the access key to re-enable (unrevoke)
+        """
+        return self.api.unrevoke_access_key(key)
+
+    def delete_access_key(self, key):
+        """
+        Deletes an access key.
+
+        :param key: the 'key' value of the access key to delete
+        """
+        return self.api.delete_access_key(key)
 
     def _base64_encode(self, string_to_encode):
         """ Base64 encodes a string, with either Python 2 or 3.
@@ -170,7 +334,8 @@ class KeenClient(object):
             import urllib.parse
             return urllib.parse.quote(url)
 
-    def count(self, event_collection, timeframe=None, timezone=None, interval=None, filters=None, group_by=None):
+    def count(self, event_collection, timeframe=None, timezone=None, interval=None,
+              filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a count query
 
         Counts the number of events that meet the given criteria.
@@ -185,15 +350,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 max_age=max_age, limit=limit)
         return self.api.query("count", params)
 
     def sum(self, event_collection, target_property, timeframe=None, timezone=None, interval=None, filters=None,
-            group_by=None):
+            group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a sum query
 
         Adds the values of a target property for events that meet the given criteria.
@@ -209,15 +382,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("sum", params)
 
-    def minimum(self, event_collection, target_property, timeframe=None, timezone=None, interval=None, filters=None,
-                group_by=None):
+    def minimum(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
+                filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a minimum query
 
         Finds the minimum value of a target property for events that meet the given criteria.
@@ -233,15 +414,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("minimum", params)
 
-    def maximum(self, event_collection, target_property, timeframe=None, timezone=None, interval=None, filters=None,
-                group_by=None):
+    def maximum(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
+                filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a maximum query
 
         Finds the maximum value of a target property for events that meet the given criteria.
@@ -257,15 +446,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("maximum", params)
 
-    def average(self, event_collection, target_property, timeframe=None, timezone=None, interval=None, filters=None,
-                group_by=None):
+    def average(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
+                filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a average query
 
         Finds the average of a target property for events that meet the given criteria.
@@ -281,15 +478,99 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("average", params)
 
+    def median(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
+                filters=None, group_by=None, order_by=None, max_age=None, limit=None):
+        """ Performs a median query
+
+        Finds the median of a target property for events that meet the given criteria.
+
+        :param event_collection: string, the name of the collection to query
+        :param target_property: string, the name of the event property you would like use
+        :param timeframe: string or dict, the timeframe in which the events
+        happened example: "previous_7_days"
+        :param timezone: int, the timezone you'd like to use for the timeframe
+        and interval in seconds
+        :param interval: string, the time interval used for measuring data over
+        time example: "daily"
+        :param filters: array of dict, contains the filters you'd like to apply to the data
+        example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
+        :param group_by: string or array of strings, the name(s) of the properties you would
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
+
+        """
+        params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
+        return self.api.query("median", params)
+
+    def percentile(self, event_collection, target_property, percentile, timeframe=None, timezone=None,
+                   interval=None, filters=None, group_by=None, order_by=None, max_age=None, limit=None):
+        """ Performs a percentile query
+
+        Finds the percentile of a target property for events that meet the given criteria.
+
+        :param event_collection: string, the name of the collection to query
+        :param target_property: string, the name of the event property you would like use
+        :param percentile: float, the specific percentile you wish to calculate,
+        supporting 0-100 with two decimal places of precision for example, 99.99
+        :param timeframe: string or dict, the timeframe in which the events
+        happened example: "previous_7_days"
+        :param timezone: int, the timezone you'd like to use for the timeframe
+        and interval in seconds
+        :param interval: string, the time interval used for measuring data over
+        time example: "daily"
+        :param filters: array of dict, contains the filters you'd like to apply to the data
+        example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
+        :param group_by: string or array of strings, the name(s) of the properties you would
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
+
+        """
+        params = self.get_params(
+            event_collection=event_collection,
+            timeframe=timeframe,
+            percentile=percentile,
+            timezone=timezone,
+            interval=interval,
+            filters=filters,
+            group_by=group_by,
+            order_by=order_by,
+            target_property=target_property,
+            max_age=max_age,
+            limit=limit
+        )
+        return self.api.query("percentile", params)
+
     def count_unique(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
-                     filters=None, group_by=None):
+                     filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a count unique query
 
         Counts the unique values of a target property for events that meet the given criteria.
@@ -305,15 +586,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("count_unique", params)
 
     def select_unique(self, event_collection, target_property, timeframe=None, timezone=None, interval=None,
-                      filters=None, group_by=None):
+                      filters=None, group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a select unique query
 
         Returns an array of the unique values of a target property for events that meet the given criteria.
@@ -329,15 +618,23 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
-                                 interval=interval, filters=filters, group_by=group_by, target_property=target_property)
+                                 interval=interval, filters=filters, group_by=group_by, order_by=order_by,
+                                 target_property=target_property, max_age=max_age, limit=limit)
         return self.api.query("select_unique", params)
 
-    def extraction(self, event_collection, timeframe=None, timezone=None, filters=None, latest=None, email=None,
-                   property_names=None):
+    def extraction(self, event_collection, timeframe=None, timezone=None, filters=None, latest=None,
+                   email=None, property_names=None):
         """ Performs a data extraction
 
         Returns either a JSON object of events or a response
@@ -353,12 +650,13 @@ class KeenClient(object):
         :param latest: int, the number of most recent records you'd like to return
         :param email: string, optional string containing an email address to email results to
         :param property_names: string or list of strings, used to limit the properties returned
+
         """
         params = self.get_params(event_collection=event_collection, timeframe=timeframe, timezone=timezone,
                                  filters=filters, latest=latest, email=email, property_names=property_names)
         return self.api.query("extraction", params)
 
-    def funnel(self, steps, timeframe=None, timezone=None):
+    def funnel(self, steps, timeframe=None, timezone=None, max_age=None, all_keys=False):
         """ Performs a Funnel query
 
         Returns an object containing the results for each step of the funnel.
@@ -370,13 +668,22 @@ class KeenClient(object):
         happened example: "previous_7_days"
         :param timezone: int, the timezone you'd like to use for the timeframe
         and interval in seconds
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
+        :all_keys: set to true to return all keys on response (i.e. "result", "actors", "steps")
 
         """
-        params = self.get_params(steps=steps, timeframe=timeframe, timezone=timezone)
-        return self.api.query("funnel", params)
+        params = self.get_params(
+            steps=steps,
+            timeframe=timeframe,
+            timezone=timezone,
+            max_age=max_age,
+        )
+
+        return self.api.query("funnel", params, all_keys=all_keys)
 
     def multi_analysis(self, event_collection, analyses, timeframe=None, interval=None, timezone=None, filters=None,
-                       group_by=None):
+                       group_by=None, order_by=None, max_age=None, limit=None):
         """ Performs a multi-analysis query
 
         Returns a dictionary of analysis results.
@@ -394,7 +701,14 @@ class KeenClient(object):
         :param filters: array of dict, contains the filters you'd like to apply to the data
         example: [{"property_name":"device", "operator":"eq", "property_value":"iPhone"}]
         :param group_by: string or array of strings, the name(s) of the properties you would
-        like to group you results by.  example: "customer.id" or ["browser","operating_system"]
+        like to group your results by.  example: "customer.id" or ["browser","operating_system"]
+        :param order_by: dictionary or list of dictionary objects containing the property_name(s)
+        to order by and the desired direction(s) of sorting.
+        Example: {"property_name":"result", "direction":keen.direction.DESCENDING}
+        May not be used without a group_by specified.
+        :param limit: positive integer limiting the displayed results of a query using order_by
+        :param max_age: an integer, greater than 30 seconds, the maximum 'staleness' you're
+        willing to trade for increased query performance, in seconds
 
         """
         params = self.get_params(
@@ -404,13 +718,17 @@ class KeenClient(object):
             timezone=timezone,
             filters=filters,
             group_by=group_by,
-            analyses=analyses)
+            order_by=order_by,
+            analyses=analyses,
+            max_age=max_age,
+            limit=limit
+        )
 
         return self.api.query("multi_analysis", params)
 
     def get_params(self, event_collection=None, timeframe=None, timezone=None, interval=None, filters=None,
-                   group_by=None, target_property=None, latest=None, email=None, analyses=None, steps=None,
-                   property_names=None):
+                   group_by=None, order_by=None, target_property=None, latest=None, email=None, analyses=None,
+                   steps=None, property_names=None, percentile=None, max_age=None, limit=None):
         params = {}
         if event_collection:
             params["event_collection"] = event_collection
@@ -430,6 +748,13 @@ class KeenClient(object):
                 params["group_by"] = json.dumps(group_by)
             else:
                 params["group_by"] = group_by
+        if order_by:
+            if isinstance(order_by, list):
+                params["order_by"] = json.dumps(order_by)
+            else:
+                params["order_by"] = json.dumps([order_by])
+        if limit:
+            params["limit"] = limit
         if target_property:
             params["target_property"] = target_property
         if latest:
@@ -442,5 +767,9 @@ class KeenClient(object):
             params["steps"] = json.dumps(steps)
         if property_names:
             params["property_names"] = json.dumps(property_names)
+        if percentile:
+            params["percentile"] = percentile
+        if max_age:
+            params["max_age"] = max_age
 
         return params
