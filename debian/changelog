@@ -1,3 +1,9 @@
+python-keen (0.7.0-0pexip2) pexip; urgency=medium
+
+  * Drop python2 support for bullseye.
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Wed, 01 Jun 2022 16:17:25 +0100
+
 python-keen (0.7.0-0pexip1) pexip; urgency=medium
 
   * Update to new version 0.7.0 from upstream

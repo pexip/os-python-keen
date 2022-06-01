@@ -3,15 +3,8 @@ Section: python
 Priority: optional
 Maintainer: Pexip AS <packaging@pexip.com>
 Build-Depends:
- debhelper (>= 11),
+ debhelper (>= 13),
  dh-python,
- python-all,
- python-nose,
- python-requests,
- python-responses,
- python-setuptools,
- python-six,
- python-unittest2,
  python3-all,
  python3-nose,
  python3-requests,
@@ -21,13 +14,7 @@ Build-Depends:
  python3-unittest2,
 Standards-Version: 4.1.5
 Homepage: https://github.com/keenlabs/KeenClient-Python
-
-Package: python-keen
-Architecture: all
-Depends:
- ${python:Depends},
- ${misc:Depends}
-Description: Python client for Keen IO
+XS-Pexip-Python-Upstream: https://pypi.org keen
 
 Package: python3-keen
 Architecture: all
