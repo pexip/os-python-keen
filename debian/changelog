@@ -1,3 +1,9 @@
+python-keen (0.7.0-0pexip4) pexip-bullseye; urgency=medium
+
+  * Main bullseye build
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Fri, 24 Jun 2022 14:04:27 +0100
+
 python-keen (0.7.0-0pexip3) pexip; urgency=medium
 
   * Initial bullseye build
