@@ -6,12 +6,10 @@ Build-Depends:
  debhelper (>= 13),
  dh-python,
  python3-all,
- python3-nose,
  python3-requests,
  python3-responses,
  python3-setuptools,
  python3-six,
- python3-unittest2,
 Standards-Version: 4.1.5
 Homepage: https://github.com/keenlabs/KeenClient-Python
 XS-Pexip-Python-Upstream: https://pypi.org keen
