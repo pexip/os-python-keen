@@ -1,3 +1,6 @@
+Update dependencies for newer versions of python and remove unnecessary
+modules.
+
 Index: python-keen/requirements.txt
 ===================================================================
 --- python-keen.orig/requirements.txt
